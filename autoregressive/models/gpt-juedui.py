@@ -342,7 +342,6 @@ class Transformer(nn.Module):
             pos_emb = self.pos_emb(token_embeddings).to(token_embeddings.device)
 
             h = self.tok_dropout(token_embeddings + pos_emb)
-            # import pdb; pdb.set_trace()
         else:
             if cond_idx is not None: # prefill in inference
                 token_embeddings = self.cls_embedding(cond_idx, train=self.training)[:,:self.cls_token_num]
@@ -353,22 +352,11 @@ class Transformer(nn.Module):
 
             pos_emb = self.pos_emb(token_embeddings).to(device=token_embeddings.device, dtype=token_embeddings.dtype)
 
-            if not self.training:
-                # import pdb; pdb.set_trace()
-                if cond_idx is not None:  # prefill in inference
-                    position_ids = torch.arange(input_pos.shape[0], device=token_embeddings.device).unsqueeze(0)
-                else:  # decode_n_tokens(kv cache) in inference
-                    position_ids = torch.arange(input_pos.item()+1, device=token_embeddings.device).unsqueeze(0)
-                # print(position_ids)
+            if not self.training: 
+                position_ids = torch.arange(input_pos.item() + 1, device=token_embeddings.device).unsqueeze(0)
                 pos_emb = self.pos_emb(position_ids).to(device=token_embeddings.device, dtype=token_embeddings.dtype)
-                # import pdb; pdb.set_trace()
-            if cond_idx is not None:  # prefill in inference
-                h = self.tok_dropout(token_embeddings + pos_emb.unsqueeze(0))
-            else:  # decode_n_tokens(kv cache) in inference
-                h = self.tok_dropout(token_embeddings + pos_emb[-1,:])
-            # print(len(position_ids[0]))
-            # if len(position_ids[0]) > 1790:
-            #     import pdb; pdb.set_trace()
+
+            h = self.tok_dropout(token_embeddings + pos_emb[-1,:])
 
         # transformer blocks
         for layer in self.layers:
