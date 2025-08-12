@@ -151,6 +151,9 @@ def main(args):
 
         y = y.detach().cpu().numpy()    # (1,)
         np.save(f'{args.code_path}/{args.dataset}{args.image_size}_labels/{train_steps}_'+img_name[0]+'.npy', y)
+
+        # import pdb; pdb.set_trace()
+
         if not args.debug:
             total += dist.get_world_size()
         else:

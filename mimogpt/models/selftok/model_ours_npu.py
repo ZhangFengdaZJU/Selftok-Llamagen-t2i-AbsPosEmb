@@ -1,18 +1,3 @@
-# Copyright (C) 2025. Huawei Technologies Co., Ltd.  All rights reserved.
-
-# Licensed under MIT License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# https://opensource.org/license/mit
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ============================================================================
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,12 +5,12 @@ import math
 from .sd3.mmdit import PatchEmbed, get_1d_sincos_pos_embed_from_grid
 from mimogpt.models.selftok.models import DiT, DiTBlock, get_2d_sincos_pos_embed, modulate, TimestepEmbedder, FinalLayer
 import torch.nn.functional as F
-from .quantizer import construct_quantizer
-from .quantizer import construct_fsq
+from .quantizer import construct_quantizer, construct_fsq
 from .modules import DiTCrossAttnBlock, ViTBlock, QFormer, DualBlock, ConcatBlock, DiTDualBlock, DualBlockMultiRes
 from einops import rearrange
 import torch.distributed as dist
 import random
+# import xformers.ops
 
 try:
     from torch.utils.checkpoint import checkpoint
@@ -68,17 +53,7 @@ class Encoder(nn.Module):
         self.apply_losses_together = apply_losses_together
         self.attn_mask = attn_mask
         self.single_token = single_token
-
         self.use_fsq = quantizer_config['use_fsq']
-        # if self.use_fsq:
-        #     import math
-        #     self.n_e = math.prod(quantizer_config['levels'])
-        #     self.code_dim = len(quantizer_config['levels'])
-        #     print("use fsq")
-        # else:
-        #     self.n_e = quantizer_config['codebook_size']
-        #     self.code_dim = quantizer_config['code_dim']
-        #     print("use vq")
 
         # models
         self.x_embedder = PatchEmbed(img_size=input_size,patch_size=patch_size, in_chans=in_channels, embed_dim=hidden_size, bias=True)
@@ -97,9 +72,9 @@ class Encoder(nn.Module):
         ])
         self.final_layer_norm = nn.LayerNorm(encoder_out_dim, eps=1e-6)
         self.final_layer_norm2 = nn.LayerNorm(self.code_dim, eps=1e-6)
-        print('self.code_dim', self.code_dim)
         self.final_layer_norm3 = nn.LayerNorm(encoder_hidden_size, eps=1e-6) 
-
+        
+        ##Add by Jiachun
         if quantizer_config['use_fsq']:
             self.quantizer = construct_fsq(
                 levels = quantizer_config['levels'],
@@ -113,7 +88,6 @@ class Encoder(nn.Module):
                 output_dim = encoder_hidden_size,
                 **quantizer_config
             )
-
         self.initialize_weights()
         
     def initialize_weights(self):
@@ -186,30 +160,31 @@ class Encoder(nn.Module):
         entropy_to_min = entropy_to_min
         return entropy_to_min
     
-    # def get_perplexity_list(self, log_dict, chunks=50):
-    #     if 'perplexity_list' in log_dict:
-    #         # separate codebook
-    #         perplexity_list = torch.tensor(log_dict['perplexity_list'])
-    #         perplexity_list = torch.stack([t.mean(dim=0) for t in perplexity_list.tensor_split(chunks, dim=0)],dim=0).float()
-    #         deter_list = torch.tensor(log_dict['deter_list']).float()
-    #         deter_list = torch.stack([t.mean(dim=0) for t in deter_list.tensor_split(chunks, dim=0)],dim=0).float()
-    #         return perplexity_list.tolist(), deter_list.tolist()
-
-    #     if not self.use_fsq:
-    #         probs = self.quantizer._codebook.timestep_p_over_c.mean(dim=0)
-    #     else:
-    #         probs = self.quantizer.timestep_p_over_c.mean(dim=0)
-            
-    #     probs = self.quantizer._codebook.timestep_p_over_c.mean(dim=0)
-    #     chunk_probs = torch.stack([t.mean(dim=0) for t in probs.tensor_split(chunks, dim=0)],dim=0).float()
-    #     ap = chunk_probs
-    #     perplexity_list = torch.exp(-torch.sum(ap * torch.log(ap + 1e-10), dim=1)).tolist()
-    #     deterministic_list = self.calc_entropy(ap).tolist()
-    #     return perplexity_list, deterministic_list
+    def get_perplexity_list(self, log_dict, chunks=50):
+        # probs = F.one_hot(indices, num_classes=self.n_e).float().mean(dim=0)
+        if 'perplexity_list' in log_dict:
+            # separate codebook
+            perplexity_list = torch.tensor(log_dict['perplexity_list'])
+            perplexity_list = torch.stack([t.mean(dim=0) for t in perplexity_list.tensor_split(chunks, dim=0)],dim=0).float()
+            deter_list = torch.tensor(log_dict['deter_list']).float()
+            deter_list = torch.stack([t.mean(dim=0) for t in deter_list.tensor_split(chunks, dim=0)],dim=0).float()
+            return perplexity_list.tolist(), deter_list.tolist()
+        probs = self.quantizer._codebook.timestep_p_over_c.mean(dim=0)
+        chunk_probs = torch.stack([t.mean(dim=0) for t in probs.tensor_split(chunks, dim=0)],dim=0).float()
+        # if not hasattr(self, 'tracker_per_k'):
+        #     self.tracker_per_k = torch.zeros_like(chunk_probs)
+        #     self.tracker_per_k += 1.0 / self.n_e
+        # if self.training:
+        #     self.tracker_per_k.mul_(0.99).add_(chunk_probs * 0.01)
+        # ap = self.tracker_per_k
+        ap = chunk_probs
+        perplexity_list = torch.exp(-torch.sum(ap * torch.log(ap + 1e-10), dim=1)).tolist()
+        deterministic_list = self.calc_entropy(ap).tolist()
+        return perplexity_list, deterministic_list
 
     def cropped_pos_embed(self, hw):
         assert self.pos_embed_max_size is not None
-        p = self.x_embedder.patch_size[0] #(2,2)
+        p = self.x_embedder.patch_size[0]
         h, w = hw
         # patched size
         h = h // p
@@ -234,37 +209,38 @@ class Encoder(nn.Module):
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         d: N, the depth for each sample
         """
-        
         if self.pos_embed_max_size is not None:
             hw = x.shape[-2:]
-            x = self.x_embedder(x) #torch.Size([4, 256, 64])
-            x = x + self.cropped_pos_embed(hw) #torch.Size([1, 256, 64])
+            x = self.x_embedder(x)
+            x = x + self.cropped_pos_embed(hw)
         else:
             x = self.x_embedder(x) + self.pos_embed
         if hidden_states is None:
-            outs = self.get_encoder_outs(x, kwargs=kwargs) #torch.Size([4, 512, 512])
+            outs = self.get_encoder_outs(x, kwargs=kwargs)
             if self.pre_norm:
-                outs = self.final_layer_norm(outs) 
+                outs = self.final_layer_norm(outs)
             to_quantizer_features = outs
             perplexity_list = []
             deterministic_list = []
+            #ema_inplace(self.embed_avg.data, embed_sum, self.decay)
 
             if self.apply_losses_together:  # False
                 enc_mask = self.get_encoder_mask(x, d)
                 grad_mask = enc_mask[..., None].expand_as(to_quantizer_features).float()
                 to_quantizer_features = to_quantizer_features * grad_mask + \
                     to_quantizer_features.detach() * (1-grad_mask)
-            
+                
             outs_q, indices, loss, log_dict = \
                 self.forward_quantizer(self.quantizer, to_quantizer_features)
             
             # prepare logs
-            # perplexity_list, deterministic_list = self.get_perplexity_list(log_dict)
-            # log_dict.update({
-            #     "perplexity_list": perplexity_list,
-            #     "deter_list": deterministic_list,
-            # })
-
+            if not self.use_fsq:
+                perplexity_list, deterministic_list = self.get_perplexity_list(log_dict)
+                log_dict.update({
+                    "perplexity_list": perplexity_list,
+                    "deter_list": deterministic_list,
+                })
+                
             if self.post_norm:
                 outs_q = self.final_layer_norm3(outs_q)
         else:
@@ -274,12 +250,10 @@ class Encoder(nn.Module):
             to_quantizer_features = None
             indices = None
         
-        if d is None:
-            return outs_q, indices
-        
         enc_mask = self.get_encoder_mask(x, d)
         attn_mask = enc_mask
         mask_v = enc_mask[..., None].expand_as(outs_q)
+        
         encoder_hidden_states = outs_q * mask_v
         return encoder_hidden_states, to_quantizer_features, outs_q, attn_mask, loss, log_dict, indices
     
@@ -310,7 +284,7 @@ class QformerEncoder(Encoder):
         self.num_query_token = K # num_query_token
         query_dim = kwargs['query_dim']
         self.query_tokens = nn.Parameter(torch.zeros(1, self.num_query_token, query_dim))
-        self.query_tokens.data.normal_(mean=0.0, std=0.02) #initialization
+        self.query_tokens.data.normal_(mean=0.0, std=0.02)
         self.mode = qformer_mode
         self.diti = diti
         self.attn_mask = attn_mask
@@ -351,8 +325,7 @@ class QformerEncoder(Encoder):
                     x, query_tokens = block(x, query_tokens)
         elif self.mode == 'dual':
             # attn mask
-            
-            if self.attn_mask: #False
+            if self.attn_mask:
                 mask = mask = torch.ones(self.K, self.K).tril().bool().cuda()
                 x_mask = torch.ones((self.K, x.shape[1])).cuda()
                 mask = torch.cat((x_mask, mask), dim=1).bool()
@@ -360,11 +333,14 @@ class QformerEncoder(Encoder):
             else:
                 mask = None
 
+            to_print = random.uniform(0,1) < 0.05 and dist.get_rank() == 0
             for i, block in enumerate(self.blocks):
                 if self.gradient_checkpointing:
                     x, query_tokens = checkpoint(ckpt_wrapper(block), x, query_tokens, mask, use_reentrant=False)
                 else:
                     x, query_tokens = block(x, query_tokens, mask=mask)
+                if to_print and (i < 4 or i > 12):
+                    print(f"Encoder Layer {i}: max(x)={x.abs().max(dim=-1)[0].mean().item()}, mean(x)={x.abs().mean(dim=-1).mean().item()}; max(q)={query_tokens.abs().max(dim=-1)[0].mean().item()}, mean(q)={query_tokens.abs().mean(dim=-1).mean().item()}")
         else:
             raise ValueError("Unknown mode to QFormerEncoder.")
         return query_tokens
@@ -372,7 +348,7 @@ class QformerEncoder(Encoder):
     def get_encoder_mask(self, x, d, single_token=False):
         # no spatial token, so num patches is essentially 1
         B, N = x.shape[0], self.K
-        enc_mask = torch.arange(self.K).repeat_interleave(1)[None, ...].expand(B,N).to(d.device)
+        enc_mask = torch.arange(self.K).repeat_interleave(1)[None, ...].expand(B,N).to(x.device)
         
         if single_token:
             return (enc_mask == d.unsqueeze(1))

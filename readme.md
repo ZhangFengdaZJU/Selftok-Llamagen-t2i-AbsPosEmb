@@ -3,10 +3,11 @@
 （2）ImageNet数据集：https://huggingface.co/datasets/visual-layer/imagenet-1k-vl-enriched/tree/main/data
 # Make sure hf CLI is installed: pip install -U "huggingface_hub[cli]"
 hf download visual-layer/imagenet-1k-vl-enriched --repo-type=dataset --local-dir
-
+/home/jovyan/data/imagenet-1k
 （3）tokenizer ckpt：https://huggingface.co/xiaoxiao012/E31/tree/main
 # Make sure hf CLI is installed: pip install -U "huggingface_hub[cli]"
 hf download xiaoxiao012/E31 --local-dir /home/jovyan/zfd/selftok-tokenizer-E31
+hf download xiaoxiao012/FSQ-W1 --local-dir /home/jovyan/zfd/selftok-tokenizer-FSQ-W1
 
 （4）SD3 ckpt：https://huggingface.co/stabilityai/stable-diffusion-3-medium
 # Make sure hf CLI is installed: pip install -U "huggingface_hub[cli]"
